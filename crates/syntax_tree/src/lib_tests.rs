@@ -131,6 +131,17 @@ impl Highlights {
 
 /// Highlights `text` as the language of `filename` and passes the result to `check`.
 fn check_highlights(filename: &'static str, text: &'static str, check: fn(&Highlights)) {
+    check_highlights_within(filename, text, text, check);
+}
+
+/// Highlights only `visible`, a unique piece of `text`, the way the editor highlights only the
+/// lines in its viewport.
+fn check_highlights_within(
+    filename: &'static str,
+    text: &'static str,
+    visible: &'static str,
+    check: fn(&Highlights),
+) {
     App::test((), move |mut app| async move {
         let language = language_for(filename);
         let buffer_handle = app.add_model(|_| Buffer::new(Box::new(|_, _| IndentBehavior::Ignore)));
@@ -152,8 +163,19 @@ fn check_highlights(filename: &'static str, text: &'static str, check: fn(&Highl
         let queries = LanguageQueries::new(language, COLOR_MAP);
 
         buffer_handle.read(&app, |buffer, _| {
-            let whole_document = CharOffset::from(0)..CharOffset::from(text.chars().count() + 1);
-            let colors = highlighted_chunks(whole_document, &queries, &COLOR_MAP, buffer, &trees);
+            let visible_start = text
+                .find(visible)
+                .expect("visible should be in the document");
+            let first_char = text[..visible_start].chars().count();
+            let range = CharOffset::from(first_char)
+                ..CharOffset::from(first_char + visible.chars().count());
+            let colors = highlighted_chunks(range.clone(), &queries, &COLOR_MAP, buffer, &trees);
+            assert!(
+                colors
+                    .iter()
+                    .all(|(colored, _)| range.start <= colored.start && colored.end <= range.end),
+                "highlights should stay inside the requested range"
+            );
             check(&Highlights {
                 text: text.to_owned(),
                 colors,
@@ -165,14 +187,11 @@ fn check_highlights(filename: &'static str, text: &'static str, check: fn(&Highl
 #[test]
 fn erb_colors_markup_as_html_and_tags_as_ruby() {
     check_highlights("show.html.erb", VIEW, |highlights| {
-        // HTML outside the tags.
         assert_eq!(highlights.color_of("<div class", "div"), Some(TAG));
         assert_eq!(highlights.color_of("</div>", "div"), Some(TAG));
         assert_eq!(highlights.color_of("<a href", "a"), Some(TAG));
         assert_eq!(highlights.color_of("\"card ", "card"), Some(STRING));
         assert_eq!(highlights.color_of("Hello, ", "Hello,"), None);
-
-        // Ruby inside the tags.
         assert_eq!(highlights.color_of("<% if @user", "if"), Some(KEYWORD));
         assert_eq!(highlights.color_of("<% if @user", "@user"), Some(PROPERTY));
         assert_eq!(highlights.color_of("<% else %>", "else"), Some(KEYWORD));
@@ -206,7 +225,6 @@ fn erb_delimiters_and_comment_tags_take_the_comment_color() {
 #[test]
 fn each_language_stays_inside_its_own_part_of_an_erb_template() {
     check_highlights("show.html.erb", VIEW, |highlights| {
-        // Ruby keywords in the markup are plain text.
         assert_eq!(
             highlights.color_of(
                 "if you sign in, then it will end",
@@ -214,23 +232,45 @@ fn each_language_stays_inside_its_own_part_of_an_erb_template() {
             ),
             None
         );
-        // The quoted attribute value spans the tag, but its color stays out of the Ruby.
         assert_eq!(highlights.color_of("<%= 1 + 2 %>", " + "), None);
-        assert_ne!(
+        assert_eq!(
             highlights.color_of("<%= card_class %>", "card_class"),
-            Some(STRING)
+            Some(FUNCTION)
         );
-        assert_ne!(
+        assert_eq!(
             highlights.color_of("<%= login_path %>", "login_path"),
-            Some(STRING)
+            Some(FUNCTION)
         );
         assert_eq!(
             highlights.color_of("<%= card_class %>", "<%="),
             Some(COMMENT)
         );
-        // HTML punctuation after a tag is still HTML.
         assert_eq!(highlights.color_of("\">\n  <% if", ">"), Some(COMMENT));
     });
+}
+
+/// The requested range starts and ends inside a tag delimiter, so its first and last characters
+/// only get their color if the range is mapped onto the trees exactly.
+#[test]
+fn erb_highlights_a_range_that_cuts_through_tags() {
+    check_highlights_within(
+        "show.html.erb",
+        VIEW,
+        "% if @user.admin? %>\n    <p>Hello, <%= t(\"greeting\") %>! You have <",
+        |highlights| {
+            assert_eq!(highlights.color_of("% if @user", "%"), Some(COMMENT));
+            assert_eq!(highlights.color_of("% if @user", "if"), Some(KEYWORD));
+            assert_eq!(highlights.color_of("admin? %>", "%>"), Some(COMMENT));
+            assert_eq!(highlights.color_of("<p>Hello", "p"), Some(TAG));
+            assert_eq!(
+                highlights.color_of("t(\"greeting\")", "\"greeting\""),
+                Some(STRING)
+            );
+            assert_eq!(highlights.color_of("You have <", "<"), Some(COMMENT));
+            assert_eq!(highlights.color_of("<div class", "div"), None);
+            assert_eq!(highlights.color_of("<%= 1 + 2 %>", "1"), None);
+        },
+    );
 }
 
 #[test]

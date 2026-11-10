@@ -521,14 +521,9 @@ fn highlighted_chunks(
     highlights
 }
 
-/// Returns the bytes of the syntax tree that `range` can show. The result is a character wider
-/// than `range` on each side, which covers the block marker that the buffer's offsets count and
-/// the tree's offsets do not.
+/// Returns the bytes of the syntax tree that `range` covers.
 fn visible_byte_range(range: &Range<CharOffset>, buffer: &Buffer) -> Range<usize> {
-    const WIDEST_CHAR: usize = 4;
-    let start = range.start.to_buffer_byte_offset(buffer).as_usize();
-    let end = range.end.to_buffer_byte_offset(buffer).as_usize();
-    start.saturating_sub(WIDEST_CHAR)..end.saturating_add(WIDEST_CHAR)
+    tree_byte(range.start, buffer)..tree_byte(range.end, buffer)
 }
 
 /// Returns the parts of `ranges`, which are in document order, that fall inside `visible`.
@@ -579,6 +574,13 @@ fn char_range(
 fn char_offset(tree_byte: usize, buffer: &Buffer) -> CharOffset {
     let buffer_offset = ByteOffset::from(tree_byte + 1).to_buffer_char_offset(buffer);
     CharOffset::from(buffer_offset.as_usize().saturating_sub(1))
+}
+
+/// Converts a character offset that highlights use into a byte offset of the syntax tree. This
+/// is the inverse of [`char_offset`].
+fn tree_byte(char_offset: CharOffset, buffer: &Buffer) -> usize {
+    let buffer_offset = CharOffset::from(char_offset.as_usize() + 1).to_buffer_byte_offset(buffer);
+    buffer_offset.as_usize().saturating_sub(1)
 }
 
 /// The parts of a template that each of its two languages parses.
